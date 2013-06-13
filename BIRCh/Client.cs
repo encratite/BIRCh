@@ -15,38 +15,61 @@ namespace BIRCh
 
 		delegate void MatchHandler(Match match);
 
-		protected string User;
-		protected string Localhost;
-		protected string Host;
-		protected string RealName;
+		public string Nick;
+		public string User;
+		public string Localhost;
+		public string Host;
+		public string RealName;
 
 		protected string ActualNick;
 
-		IPEndPoint ServerEndpoint;
 		TcpClient IRCClient;
 
 		Dictionary<string, MatchHandler> MatchHandlers;
 
-		public void Run()
+		public void Run(IPEndPoint serverEndpoint)
 		{
 			while (true)
 			{
-				Connect();
-				ReadLines();
+				try
+				{
+					Connect(serverEndpoint);
+					ReadLines();
+				}
+				catch (IOException exception)
+				{
+					OnDisconnect(exception);
+				}
 			}
 		}
 
-		protected Client(IPEndPoint serverEndpoint, string user, string localhost, string host, string realName)
+		protected Client()
 		{
-			User = user;
-			Localhost = localhost;
-			Host = host;
-			RealName = realName;
-			ServerEndpoint = serverEndpoint;
+			Nick = "BIRCh";
+			User = "BIRCh";
+			Localhost = "0";
+			Host = "*";
+			RealName = "BIRCh";
 			SetMatchHandlers();
 		}
 
 		#region Default event handlers
+
+		protected virtual void OnConnect()
+		{
+		}
+
+		protected virtual void OnDisconnect(Exception exception)
+		{
+		}
+
+		protected virtual void OnReceive(string line)
+		{
+		}
+
+		protected virtual void OnSend(string line)
+		{
+		}
 
 		protected virtual void OnEntry()
 		{
@@ -95,7 +118,7 @@ namespace BIRCh
 
 		protected void SetUser(string user, string localhost, string host, string realName)
 		{
-			Send(string.Format("USER {0} \"{1}\" \"{2}\" \"{3}\"", user, localhost, host, realName));
+			Send(string.Format("USER {0} {1} {2} :{3}", user, localhost, host, realName));
 		}
 
 		void SetMatchHandlers()
@@ -106,23 +129,28 @@ namespace BIRCh
 			MatchHandlers["^([^ ]+?) 422 ([^ ]+?) :?(.+?)$"] = OnEndOfMotdMatch;
 			MatchHandlers["^([^ ]+?) 433 (.+?)$"] = OnNickInUseMatch;
 			MatchHandlers["^([^ ]+?) 437 (.+?)$"] = OnNickInUseMatch;
-			MatchHandlers["^([^ ]+?)!([^ ]+?)@([^ ]+?) NOTICE ([^ ]+?) :?(.+?)$"] = OnNoticeMatch;
-			MatchHandlers["^([^ ]+?)!([^ ]+?)@([^ ]+?) INVITE ([^ ]+?) :?(.+?)$"] = OnInviteMatch;
-			MatchHandlers["^([^ ]+?)!([^ ]+?)@([^ ]+?) JOIN ([^ ]+?)$"] = OnJoinMatch;
-			MatchHandlers["^([^ ]+?)!([^ ]+?)@([^ ]+?) PRIVMSG ([^ ]+?) :?(.+?)$"] = OnMessageMatch;
-			MatchHandlers["^([^ ]+?)!([^ ]+?)@([^ ]+?) MODE ([^ ]+?) :?(.+?)$"] = OnModeMatch;
-			MatchHandlers["^([^ ]+?)!([^ ]+?)@([^ ]+?) QUIT :?(.+?)$"] = OnQuitMatch;
+			MatchHandlers["^:?([^ ]+?)!([^ ]+?)@([^ ]+?) NOTICE ([^ ]+?) :?(.+?)$"] = OnNoticeMatch;
+			MatchHandlers["^:?([^ ]+?)!([^ ]+?)@([^ ]+?) INVITE ([^ ]+?) :?(.+?)$"] = OnInviteMatch;
+			MatchHandlers["^:?([^ ]+?)!([^ ]+?)@([^ ]+?) JOIN ([^ ]+?)$"] = OnJoinMatch;
+			MatchHandlers["^:?([^ ]+?)!([^ ]+?)@([^ ]+?) PRIVMSG ([^ ]+?) :?(.+?)$"] = OnMessageMatch;
+			MatchHandlers["^:?([^ ]+?)!([^ ]+?)@([^ ]+?) MODE ([^ ]+?) :?(.+?)$"] = OnModeMatch;
+			MatchHandlers["^:?([^ ]+?)!([^ ]+?)@([^ ]+?) QUIT :?(.+?)$"] = OnQuitMatch;
 		}
 
-		void Connect()
+		void Connect(IPEndPoint serverEndpoint)
 		{
 			IRCClient = new TcpClient();
-			IRCClient.Connect(ServerEndpoint);
+			IRCClient.Connect(serverEndpoint);
+			OnConnect();
+			// Send("CAP LS");
+			ChangeNick(Nick);
+			SetUser(User, Localhost, Host, RealName);
 		}
 
 		void Send(string line)
 		{
-			byte[] buffer = Encoding.UTF8.GetBytes(line + EndOfLine);
+			OnSend(line);
+			byte[] buffer = Encoding.UTF8.GetBytes(line + "\n");
 			IRCClient.GetStream().Write(buffer, 0, buffer.Length);
 		}
 
@@ -134,25 +162,31 @@ namespace BIRCh
 				byte[] buffer = new byte[BufferSize];
 				int bytesRead = IRCClient.GetStream().Read(buffer, 0, buffer.Length);
 				stream.Write(buffer, 0, bytesRead);
-				string asciiString = Encoding.ASCII.GetString(stream.GetBuffer());
-				int offset = asciiString.IndexOf(EndOfLine);
-				if (offset != -1)
+				while(true)
 				{
 					byte[] streamBuffer = stream.GetBuffer();
+					string asciiString = Encoding.ASCII.GetString(streamBuffer);
+					int offset = asciiString.IndexOf(EndOfLine);
+					if (offset == -1)
+						break;
 					string unicodeString = Encoding.UTF8.GetString(streamBuffer, 0, offset);
 					ParseLine(unicodeString);
+					int oldStreamLength = (int)stream.Length;
 					stream = new MemoryStream();
-					stream.Write(streamBuffer, EndOfLine.Length, streamBuffer.Length - EndOfLine.Length);
+					int nextLineOffset = offset + EndOfLine.Length;
+					string restString = Encoding.UTF8.GetString(streamBuffer, nextLineOffset, oldStreamLength - nextLineOffset);
+					stream.Write(streamBuffer, nextLineOffset, oldStreamLength - nextLineOffset);
 				}
 			}
 		}
 
 		void ParseLine(string line)
 		{
+			OnReceive(line);
 			foreach (var pair in MatchHandlers)
 			{
 				Match match = Regex.Match(line, pair.Key);
-				if (match != null)
+				if (match.Success)
 				{
 					pair.Value(match);
 					break;
@@ -171,6 +205,7 @@ namespace BIRCh
 		{
 			string reply = "PONG " + match.Groups[1].Value;
 			Send(reply);
+			// Send("CAP END");
 		}
 
 		void OnEndOfMotdMatch(Match match)
