@@ -106,6 +106,11 @@ namespace BIRCh
 			Send(string.Format("PRIVMSG {0} :{1}", target, message));
 		}
 
+		protected void SendNotice(string target, string message)
+		{
+			Send(string.Format("NOTICE {0} :{1}", target, message));
+		}
+
 		protected void JoinChannel(string channel)
 		{
 			Send(string.Format("JOIN {0}", channel));
@@ -150,7 +155,7 @@ namespace BIRCh
 		void Send(string line)
 		{
 			OnSend(line);
-			byte[] buffer = Encoding.UTF8.GetBytes(line + "\n");
+			byte[] buffer = Encoding.UTF8.GetBytes(line + EndOfLine);
 			IRCClient.GetStream().Write(buffer, 0, buffer.Length);
 		}
 
