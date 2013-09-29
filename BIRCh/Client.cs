@@ -166,6 +166,11 @@ namespace BIRCh
 			{
 				byte[] buffer = new byte[BufferSize];
 				int bytesRead = IRCClient.GetStream().Read(buffer, 0, buffer.Length);
+				if (bytesRead == 0)
+				{
+					OnDisconnect(null);
+					return;
+				}
 				stream.Write(buffer, 0, bytesRead);
 				while(true)
 				{
