@@ -5,15 +5,18 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace BIRCh
 {
 	public class Client
 	{
-		const int BufferSize = 0x1000;
-		const string EndOfLine = "\r\n";
+		private const int BufferSize = 0x1000;
+		private const string EndOfLine = "\r\n";
+		private const int ConnectionTimeout = 60 * 60 * 1000;
 
-		delegate void MatchHandler(Match match);
+		private delegate void MatchHandler(Match match);
 
 		public string Nick;
 		public string User;
@@ -23,9 +26,9 @@ namespace BIRCh
 
 		protected string ActualNick;
 
-		TcpClient IRCClient;
+		private TcpClient IRCClient;
 
-		Dictionary<string, MatchHandler> MatchHandlers;
+		private Dictionary<string, MatchHandler> MatchHandlers;
 
 		public void Run(IPEndPoint serverEndpoint)
 		{
@@ -36,7 +39,7 @@ namespace BIRCh
 					Connect(serverEndpoint);
 					ReadLines();
 				}
-				catch (IOException exception)
+				catch (Exception exception)
 				{
 					OnDisconnect(exception);
 				}
@@ -126,7 +129,7 @@ namespace BIRCh
 			Send(string.Format("USER {0} {1} {2} :{3}", user, localhost, host, realName));
 		}
 
-		void SetMatchHandlers()
+		private void SetMatchHandlers()
 		{
 			MatchHandlers = new Dictionary<string, MatchHandler>();
 			MatchHandlers["^PING (.+?)$"] = OnPingMatch;
@@ -142,7 +145,7 @@ namespace BIRCh
 			MatchHandlers["^:?([^ ]+?)!([^ ]+?)@([^ ]+?) QUIT :?(.+?)$"] = OnQuitMatch;
 		}
 
-		void Connect(IPEndPoint serverEndpoint)
+		private void Connect(IPEndPoint serverEndpoint)
 		{
 			IRCClient = new TcpClient();
 			IRCClient.Connect(serverEndpoint);
@@ -152,7 +155,7 @@ namespace BIRCh
 			SetUser(User, Localhost, Host, RealName);
 		}
 
-		void Send(string line)
+		private void Send(string line)
 		{
 			OnSend(line);
 			byte[] buffer = Encoding.UTF8.GetBytes(line + EndOfLine);
@@ -165,13 +168,21 @@ namespace BIRCh
 			while (IRCClient.Connected)
 			{
 				byte[] buffer = new byte[BufferSize];
-				int bytesRead = IRCClient.GetStream().Read(buffer, 0, buffer.Length);
+				var tokenSource = new CancellationTokenSource();
+				int? bytesRead = null;
+				var task = Task.Factory.StartNew
+				(
+					(x) => bytesRead = IRCClient.GetStream().Read(buffer, 0, buffer.Length),
+					tokenSource
+				);
+				if (!task.Wait(ConnectionTimeout, tokenSource.Token))
+					throw new ApplicationException("Connection timeout");
 				if (bytesRead == 0)
 				{
 					OnDisconnect(null);
 					return;
 				}
-				stream.Write(buffer, 0, bytesRead);
+				stream.Write(buffer, 0, bytesRead.Value);
 				while(true)
 				{
 					byte[] streamBuffer = stream.GetBuffer();
@@ -190,7 +201,7 @@ namespace BIRCh
 			}
 		}
 
-		void ParseLine(string line)
+		private void ParseLine(string line)
 		{
 			OnReceive(line);
 			foreach (var pair in MatchHandlers)
@@ -204,32 +215,32 @@ namespace BIRCh
 			}
 		}
 
-		User GetUser(Match match)
+		private User GetUser(Match match)
 		{
 			return new User(match.Groups[1].Value, match.Groups[2].Value, match.Groups[3].Value);
 		}
 
 		#region Match handlers
 
-		void OnPingMatch(Match match)
+		private void OnPingMatch(Match match)
 		{
 			string reply = "PONG " + match.Groups[1].Value;
 			Send(reply);
 			// Send("CAP END");
 		}
 
-		void OnEndOfMotdMatch(Match match)
+		private void OnEndOfMotdMatch(Match match)
 		{
 			ActualNick = match.Groups[2].Value;
 			OnEntry();
 		}
 
-		void OnNickInUseMatch(Match match)
+		private void OnNickInUseMatch(Match match)
 		{
 			throw new Exception("Nick in use");
 		}
 
-		void OnNoticeMatch(Match match)
+		private void OnNoticeMatch(Match match)
 		{
 			User user = GetUser(match);
 			string target = match.Groups[4].Value;
@@ -237,7 +248,7 @@ namespace BIRCh
 			OnNotice(user, target, message);
 		}
 
-		void OnInviteMatch(Match match)
+		private void OnInviteMatch(Match match)
 		{
 			User user = GetUser(match);
 			string target = match.Groups[4].Value;
@@ -245,14 +256,14 @@ namespace BIRCh
 			OnInvite(user, channel);
 		}
 
-		void OnJoinMatch(Match match)
+		private void OnJoinMatch(Match match)
 		{
 			User user = GetUser(match);
 			string channel = match.Groups[4].Value;
 			OnJoin(user, channel);
 		}
 
-		void OnMessageMatch(Match match)
+		private void OnMessageMatch(Match match)
 		{
 			User user = GetUser(match);
 			string target = match.Groups[4].Value;
@@ -260,7 +271,7 @@ namespace BIRCh
 			OnMessage(user, target, message);
 		}
 
-		void OnModeMatch(Match match)
+		private void OnModeMatch(Match match)
 		{
 			User user = GetUser(match);
 			string target = match.Groups[4].Value;
@@ -268,7 +279,7 @@ namespace BIRCh
 			OnMode(user, target, modes);
 		}
 
-		void OnQuitMatch(Match match)
+		private void OnQuitMatch(Match match)
 		{
 			User user = GetUser(match);
 			string message = match.Groups[4].Value;
